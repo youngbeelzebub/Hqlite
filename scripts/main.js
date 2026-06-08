@@ -23,6 +23,24 @@ const { execSync } = require('child_process');
 
 const SCRIPTS_DIR = __dirname;
 
+// ===================== 自动安装依赖 =====================
+
+function ensureDependencies() {
+  const nodeModulesPath = path.join(SCRIPTS_DIR, 'node_modules');
+  if (!fs.existsSync(nodeModulesPath)) {
+    console.log('首次运行，正在安装依赖...');
+    try {
+      execSync('npm install', { cwd: SCRIPTS_DIR, stdio: 'inherit' });
+      console.log('依赖安装完成。\n');
+    } catch (e) {
+      console.error('依赖安装失败，请手动运行: cd scripts && npm install');
+      process.exit(1);
+    }
+  }
+}
+
+ensureDependencies();
+
 // ===================== 工具函数 =====================
 
 function ensureDir(dir) {

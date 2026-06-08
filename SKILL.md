@@ -15,11 +15,16 @@ description: "Extracts references from academic papers, matches them against use
 
 ## 前置条件
 
-需要 **Node.js** (v16+)。首次使用前安装依赖：
+需要 **Node.js** (v16+)。在运行任何命令之前，先检测 Node.js 是否可用：
 
 ```bash
-cd <skill-path>/scripts && npm install
+node --version
 ```
+
+如果报错（如 `'node' 不是内部或外部命令`），提示用户：
+> 本工具需要 Node.js v16+，请先安装：https://nodejs.org/
+
+依赖会在首次运行时自动安装，无需手动操作。
 
 ## 文件夹结构（用户准备）
 
