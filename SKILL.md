@@ -53,10 +53,24 @@ node <skill-path>/scripts/main.js "<文件夹路径>" prepare
 
 此命令自动完成：
 - 扫描文件夹，找到 rank 文件和论文 PDF
-- 解析 rank 文件，提取期刊等级数据 → `.hq_temp/rank_data.json`
+- 解析 rank 文件，识别专业领域，提取期刊等级数据 → `.hq_temp/rank_data.json`
 - 将每篇论文 PDF 转为纯文本 → `.hq_temp/paper_1.txt`, `.hq_temp/paper_2.txt`, ...
 
-运行后，读取输出的等级摘要，告诉用户可用的等级选项，询问用户要筛选哪些等级。
+运行后，读取输出的领域摘要和等级摘要。
+
+### Step 1.5: 用户选择领域和语言（由你完成）
+
+**这一步必须由模型与用户交互完成。**
+
+1. 读取 prepare 命令输出的领域列表
+2. 使用 AskUserQuestion 工具，让用户选择要筛选的专业领域（多选）
+3. 使用 AskUserQuestion 工具，询问用户要提取中文期刊、英文期刊还是全部
+4. 读取等级摘要，让用户选择要筛选的等级（多选）
+
+用户选择后，记录以下信息：
+- **选中的领域**: 如 "经济学,心理学"
+- **语言类型**: "chinese" / "english" / "all"
+- **选中的等级**: 如 "A+,A"
 
 ### Step 2: 模型解析参考文献（由你完成）
 
@@ -101,16 +115,18 @@ node <skill-path>/scripts/main.js "<文件夹路径>" prepare
 ### Step 3: 运行 export 命令
 
 ```bash
-node <skill-path>/scripts/main.js "<文件夹路径>" export "<refs_json路径>" "<等级>"
+node <skill-path>/scripts/main.js "<文件夹路径>" export "<refs_json路径>" "<等级>" "<领域>" "<语言>"
 ```
 
 例：
 ```bash
-node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A+,A"
+node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A+,A" "经济学,心理学" "all"
+node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A+" "经济学" "chinese"
 ```
 
 此命令自动完成：
-- 匹配参考文献与期刊等级数据
+- 根据用户选择的领域和语言，筛选对应的期刊等级数据
+- 匹配参考文献与筛选后的期刊等级数据
 - 筛选用户选择的等级
 - 生成格式化 Excel 文件 → `<文件夹>/hq_references.xlsx`
 - 清理临时文件（`.hq_temp` 目录）
@@ -126,10 +142,10 @@ node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A
 
 | 脚本 | 功能 |
 |------|------|
-| [scripts/main.js](scripts/main.js) | 主入口：prepare 和 export 两条命令 |
+| [scripts/main.js](scripts/main.js) | 主入口：prepare、list-domains 和 export 三条命令 |
 | [scripts/read_pdf.js](scripts/read_pdf.js) | PDF 转纯文本 |
-| [scripts/parse_rank.js](scripts/parse_rank.js) | 解析等级文件 → 期刊等级 JSON |
-| [scripts/match_journals.js](scripts/match_journals.js) | 匹配参考文献与等级数据 |
+| [scripts/parse_rank.js](scripts/parse_rank.js) | 解析等级文件 → 识别领域 → 期刊等级 JSON（含中文/英文分类） |
+| [scripts/match_journals.js](scripts/match_journals.js) | 匹配参考文献与等级数据（支持领域和语言筛选） |
 | [scripts/generate_xlsx.js](scripts/generate_xlsx.js) | 生成格式化 Excel |
 
 ## 参考文档
