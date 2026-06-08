@@ -1,0 +1,4 @@
+node_modules/
+.hq_temp/
+*.xlsx
+!assets/.gitkeep
