@@ -1,7 +1,7 @@
 /**
  * match_journals.js - 将提取的参考文献与期刊等级数据匹配
  *
- * 用法: node match_journals.js <refs_json> <rank_json> <筛选等级> <输出json> [domains] [language]
+ * 用法: node match_journals.js <refs_json> <rank_json> <筛选等级> <输出json> [domains] [language] [unmatched_json]
  *   筛选等级: 逗号分隔，如 "A+,A"
  *   domains: 逗号分隔的领域名，如 "经济学,心理学"（可选，默认全部领域）
  *   language: "chinese"/"english"/"all"（可选，默认 "all"）
@@ -52,7 +52,7 @@ function buildJournalMap(rankData, selectedDomains, language) {
         if (key.length > 2) {
           // 如果已有映射，保留（不覆盖），因为同一期刊可能出现在多个领域
           if (!map.has(key)) {
-            map.set(key, tier);
+            map.set(key, { tier, journal, domain: domainName });
           }
         }
       }
@@ -69,7 +69,7 @@ function matchJournal(journalName, journalMap) {
 
   // 策略1: 精确匹配
   if (journalMap.has(normalized)) {
-    return journalMap.get(normalized);
+    return { ...journalMap.get(normalized), match_level: 1, match_score: 1 };
   }
 
   // 策略1.5: 去空格匹配
@@ -79,7 +79,7 @@ function matchJournal(journalName, journalMap) {
   for (const [rankedJournal, tier] of journalMap.entries()) {
     const rankedCollapsed = rankedJournal.replace(/\s/g, '');
     if (rankedCollapsed === collapsed) {
-      return tier;
+      return { ...tier, match_level: 1.5, match_score: 1 };
     }
   }
 
@@ -88,7 +88,7 @@ function matchJournal(journalName, journalMap) {
   //   - 双方长度都 >= 8（短名期刊如 "science"、"nature" 只走精确匹配）
   //   - 较短者占较长者长度比例 >= 0.6（避免 "journal of economics" 匹配到 "journal"）
   //   - 较短者必须是较长者的完整词组边界（避免部分词组重叠）
-  for (const [rankedJournal, tier] of journalMap.entries()) {
+  for (const [rankedJournal, info] of journalMap.entries()) {
     if (normalized.length < 8 || rankedJournal.length < 8) continue;
     const shorter = Math.min(normalized.length, rankedJournal.length);
     const longer = Math.max(normalized.length, rankedJournal.length);
@@ -104,7 +104,7 @@ function matchJournal(journalName, journalMap) {
       const beforeOk = idx === 0 || container[idx - 1] === ' ';
       const afterOk = idx + contained.length === container.length || container[idx + contained.length] === ' ';
       if (beforeOk && afterOk) {
-        return tier;
+        return { ...info, match_level: 2, match_score: shorter / longer };
       }
     }
   }
@@ -156,11 +156,11 @@ function matchJournal(journalName, journalMap) {
   if (abbreviations[lowerJournal]) {
     const expanded = abbreviations[lowerJournal];
     if (journalMap.has(expanded)) {
-      return journalMap.get(expanded);
+      return { ...journalMap.get(expanded), match_level: 3, match_score: 1 };
     }
-    for (const [rankedJournal, tier] of journalMap.entries()) {
+    for (const [rankedJournal, info] of journalMap.entries()) {
       if (rankedJournal.includes(expanded) || expanded.includes(rankedJournal)) {
-        return tier;
+        return { ...info, match_level: 3, match_score: 0.95 };
       }
     }
   }
@@ -192,14 +192,14 @@ function matchJournal(journalName, journalMap) {
   if (journalWords.length >= 2) {
     let bestMatch = null;
     let bestScore = 0;
-    for (const [rankedJournal, tier] of journalMap.entries()) {
+    for (const [rankedJournal, info] of journalMap.entries()) {
       const rankedWords = rankedJournal.split(' ').filter(w => w.length > 3 && !stopWords.has(w));
       if (rankedWords.length < 2) continue;
       const overlap = journalWords.filter(w => rankedWords.includes(w)).length;
       const score = overlap / Math.max(journalWords.length, rankedWords.length);
       if (score > bestScore && score >= 0.8) {
         bestScore = score;
-        bestMatch = tier;
+        bestMatch = { ...info, match_level: 4, match_score: score };
       }
     }
     if (bestMatch) return bestMatch;
@@ -213,15 +213,29 @@ function matchJournals(refsData, rankData, tiersToFilter, selectedDomains, langu
   console.log(`已加载 ${journalMap.size} 个期刊等级条目 (领域: ${selectedDomains && selectedDomains.length > 0 ? selectedDomains.join(', ') : '全部'}, 语言: ${language || 'all'})`);
 
   const results = [];
+  const unmatchedResults = [];
   const papers = Array.isArray(refsData) ? refsData : [refsData];
 
   for (const paper of papers) {
     const filtered = [];
+    const unmatched = [];
 
     for (const ref of paper.references) {
-      const matchedTier = matchJournal(ref.journal, journalMap);
-      if (matchedTier && tiersToFilter.includes(matchedTier)) {
-        filtered.push({ ...ref, matched_tier: matchedTier });
+      const match = matchJournal(ref.journal, journalMap);
+      if (match && tiersToFilter.includes(match.tier)) {
+        filtered.push({
+          ...ref,
+          matched_tier: match.tier,
+          matched_journal: match.journal,
+          matched_domain: match.domain,
+          match_level: match.match_level,
+          match_score: match.match_score,
+        });
+      } else if (!match) {
+        unmatched.push({
+          ...ref,
+          unmatched_reason: 'No journal match in selected domain/language pool',
+        });
       }
     }
 
@@ -239,15 +253,20 @@ function matchJournals(refsData, rankData, tiersToFilter, selectedDomains, langu
       paper_title: paper.paper_title,
       references: filtered,
     });
+    unmatchedResults.push({
+      sheet_name: paper.sheet_name,
+      paper_title: paper.paper_title,
+      references: unmatched,
+    });
   }
 
-  return results;
+  return { results, unmatchedResults };
 }
 
 // CLI
 const args = process.argv.slice(2);
 if (args.length < 4) {
-  console.error('用法: node match_journals.js <refs_json> <rank_json> <筛选等级> <输出json> [domains] [language]');
+  console.error('用法: node match_journals.js <refs_json> <rank_json> <筛选等级> <输出json> [domains] [language] [unmatched_json]');
   console.error('  筛选等级: 逗号分隔，如 "A+,A"');
   console.error('  domains: 逗号分隔的领域名，如 "经济学,心理学"（可选，默认全部）');
   console.error('  language: "chinese"/"english"/"all"（可选，默认 "all"）');
@@ -287,7 +306,12 @@ if (selectedDomains) {
 const language = (args[5] || 'all').toLowerCase();
 console.log(`语言筛选: ${language === 'chinese' ? '中文期刊' : language === 'english' ? '英文期刊' : '全部'}`);
 
-const results = matchJournals(refsData, rankData, tiersToFilter, selectedDomains, language);
+const { results, unmatchedResults } = matchJournals(refsData, rankData, tiersToFilter, selectedDomains, language);
 
 fs.writeFileSync(args[3], JSON.stringify(results, null, 2), 'utf-8');
 console.log(`✓ 匹配结果已保存到: ${args[3]}`);
+
+if (args[6]) {
+  fs.writeFileSync(args[6], JSON.stringify(unmatchedResults, null, 2), 'utf-8');
+  console.log(`✓ 未匹配参考文献已保存到: ${args[6]}`);
+}

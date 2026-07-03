@@ -75,6 +75,72 @@ function runNodeScript(scriptName, args) {
   }
 }
 
+function buildRankParseReport(rankData, rankFileName) {
+  const lines = [];
+  lines.push('# Rank Parse Report');
+  lines.push('');
+  lines.push(`Source file: ${rankFileName}`);
+  lines.push(`Generated at: ${new Date().toISOString()}`);
+  lines.push('');
+  lines.push('## Summary');
+  lines.push('');
+  lines.push(`- Domains detected: ${(rankData.all_domains || []).length}`);
+  lines.push(`- Tiers detected: ${(rankData.all_tiers || []).join(', ') || 'None'}`);
+  lines.push('');
+
+  const warnings = [];
+  if (!rankData.all_domains || rankData.all_domains.length === 0) {
+    warnings.push('No domains were detected.');
+  }
+  if (!rankData.all_tiers || rankData.all_tiers.length === 0) {
+    warnings.push('No tiers were detected.');
+  }
+
+  lines.push('## Domains');
+  lines.push('');
+  for (const domainName of rankData.all_domains || []) {
+    const domainData = rankData.domains[domainName];
+    const total = Object.values(domainData.tiers || {}).reduce((sum, arr) => sum + arr.length, 0);
+    const cnCount = Object.values(domainData.chinese_journals || {}).reduce((sum, arr) => sum + arr.length, 0);
+    const enCount = Object.values(domainData.english_journals || {}).reduce((sum, arr) => sum + arr.length, 0);
+    lines.push(`### ${domainName}`);
+    lines.push('');
+    lines.push(`- Total journals: ${total}`);
+    lines.push(`- Chinese journals: ${cnCount}`);
+    lines.push(`- English journals: ${enCount}`);
+    lines.push('');
+    lines.push('| Tier | Count | Chinese | English | Samples |');
+    lines.push('|---|---:|---:|---:|---|');
+    for (const [tier, journals] of Object.entries(domainData.tiers || {})) {
+      const chinese = (domainData.chinese_journals && domainData.chinese_journals[tier] || []).length;
+      const english = (domainData.english_journals && domainData.english_journals[tier] || []).length;
+      const samples = journals.slice(0, 5).join('; ');
+      lines.push(`| ${tier} | ${journals.length} | ${chinese} | ${english} | ${samples} |`);
+      if (journals.length === 0) {
+        warnings.push(`Domain "${domainName}" tier "${tier}" has no journals.`);
+      }
+    }
+    lines.push('');
+  }
+
+  lines.push('## Warnings');
+  lines.push('');
+  if (warnings.length === 0) {
+    lines.push('- None.');
+  } else {
+    warnings.forEach(warning => lines.push(`- ${warning}`));
+  }
+  lines.push('');
+  lines.push('## Next Checks');
+  lines.push('');
+  lines.push('- Confirm that the detected domains match the rank file.');
+  lines.push('- Confirm that each selected tier has plausible journal counts.');
+  lines.push('- If counts look too low, convert the rank file to XLSX or CSV and rerun prepare.');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
 // ===================== prepare 命令 =====================
 
 function prepare(folderPath) {
@@ -117,6 +183,11 @@ function prepare(folderPath) {
   runNodeScript('parse_rank.js', [rankPath, rankOutput]);
   console.log('');
 
+  const rankData = JSON.parse(fs.readFileSync(rankOutput, 'utf-8'));
+  const rankReportPath = path.join(tempDir, 'rank_parse_report.md');
+  fs.writeFileSync(rankReportPath, buildRankParseReport(rankData, rankFile), 'utf-8');
+  console.log(`✓ 等级解析诊断报告: ${rankReportPath}`);
+
   // 5. 查找论文 PDF
   const paperFiles = allFiles.filter(f => {
     const ext = path.extname(f).toLowerCase();
@@ -142,6 +213,8 @@ function prepare(folderPath) {
     const txtPath = path.join(tempDir, `paper_${i + 1}.txt`);
     console.log(`\n[${i + 1}/${paperFiles.length}] ${paperFiles[i]}`);
     runNodeScript('read_pdf.js', [pdfPath, txtPath]);
+    const blocksPath = path.join(tempDir, `paper_${i + 1}_reference_blocks.json`);
+    runNodeScript('split_references.js', [txtPath, blocksPath]);
     paperTextPaths.push(txtPath);
   }
 
@@ -152,9 +225,6 @@ function prepare(folderPath) {
   console.log('下一步: 请让模型读取以下文件并解析参考文献:');
   paperTextPaths.forEach((p, i) => console.log(`  论文 ${i + 1}: ${p}`));
   console.log(`\n等级数据: ${rankOutput}`);
-
-  // 读取等级数据摘要
-  const rankData = JSON.parse(fs.readFileSync(rankOutput, 'utf-8'));
 
   console.log('\n可用领域:');
   for (const domainName of rankData.all_domains) {
@@ -284,13 +354,17 @@ function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
   // 2. 匹配参考文献
   console.log('\n--- 匹配参考文献 ---');
   const filteredPath = path.join(tempDir, 'filtered_refs.json');
-  runNodeScript('match_journals.js', [refsJsonPath, rankDataPath, tiersStr, filteredPath, domainsStr || '', lang]);
+  const unmatchedPath = path.join(tempDir, 'unmatched_refs.json');
+  runNodeScript('match_journals.js', [refsJsonPath, rankDataPath, tiersStr, filteredPath, domainsStr || '', lang, unmatchedPath]);
   console.log('');
 
   // 3. 生成 Excel
   console.log('--- 生成 Excel ---');
   const outputPath = path.join(folderPath, 'hq_references.xlsx');
   runNodeScript('generate_xlsx.js', ['--input', filteredPath, '--output', outputPath]);
+
+  const unmatchedOutputPath = path.join(folderPath, 'unmatched_refs.xlsx');
+  runNodeScript('generate_xlsx.js', ['--input', unmatchedPath, '--output', unmatchedOutputPath]);
 
   // 4. 清理临时文件
   console.log('\n--- 清理临时文件 ---');
@@ -308,6 +382,7 @@ function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
   console.log('  完成！');
   console.log('========================================\n');
   console.log(`Excel 文件已保存到: ${outputPath}`);
+  console.log(`未匹配参考文献已保存到: ${unmatchedOutputPath}`);
 }
 
 // ===================== CLI =====================

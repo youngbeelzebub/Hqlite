@@ -54,7 +54,9 @@ node <skill-path>/scripts/main.js "<文件夹路径>" prepare
 此命令自动完成：
 - 扫描文件夹，找到 rank 文件和论文 PDF
 - 解析 rank 文件，识别专业领域，提取期刊等级数据 → `.hq_temp/rank_data.json`
+- 生成 rank 解析诊断报告 → `.hq_temp/rank_parse_report.md`
 - 将每篇论文 PDF 转为纯文本 → `.hq_temp/paper_1.txt`, `.hq_temp/paper_2.txt`, ...
+- 将每篇论文文本预切分为参考文献候选块 → `.hq_temp/paper_1_reference_blocks.json`, `.hq_temp/paper_2_reference_blocks.json`, ...
 
 运行后，读取输出的领域摘要和等级摘要。
 
@@ -77,10 +79,11 @@ node <skill-path>/scripts/main.js "<文件夹路径>" prepare
 **这一步无法自动化，必须由模型完成。**
 
 1. 读取 `.hq_temp/paper_*.txt` 文件
-2. 在文本中找到 References/参考文献 部分
-3. 从第一页提取论文标题和第一作者（用于 sheet 命名）
-4. 逐条解析参考文献，提取四个字段：Title, Year, Journal, Authors
-5. 将结果写入 JSON 文件
+2. 优先读取 `.hq_temp/paper_*_reference_blocks.json`，将其中的 blocks 作为参考文献解析候选；必要时回看完整 `.txt`
+3. 在文本中找到 References/参考文献 部分
+4. 从第一页提取论文标题和第一作者（用于 sheet 命名）
+5. 逐条解析参考文献，提取四个字段：Title, Year, Journal, Authors
+6. 将结果写入 JSON 文件
 
 详细解析规则见 [references/extraction-rules.md](references/extraction-rules.md)
 
@@ -129,11 +132,13 @@ node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A
 - 匹配参考文献与筛选后的期刊等级数据
 - 筛选用户选择的等级
 - 生成格式化 Excel 文件 → `<文件夹>/hq_references.xlsx`
+- 生成未匹配参考文献 Excel 文件 → `<文件夹>/unmatched_refs.xlsx`
 - 清理临时文件（`.hq_temp` 目录）
 
 ## 输出
 
 - **文件**：`hq_references.xlsx`，保存在用户指定的文件夹中
+- **未匹配文件**：`unmatched_refs.xlsx`，用于检查 rank 缺失、期刊名抽取错误或缩写未识别的问题
 - **工作表**：每篇论文一个 sheet，命名为 `{标题首字母}-{第一作者姓氏}`
 - **列**：Title | Year | Journal | Author(s)
 - **排序**：年份降序 → 期刊升序
@@ -144,6 +149,7 @@ node <skill-path>/scripts/main.js "D:\论文" export ".hq_temp/all_refs.json" "A
 |------|------|
 | [scripts/main.js](scripts/main.js) | 主入口：prepare、list-domains 和 export 三条命令 |
 | [scripts/read_pdf.js](scripts/read_pdf.js) | PDF 转纯文本 |
+| [scripts/split_references.js](scripts/split_references.js) | 将论文文本预切分为参考文献候选块 |
 | [scripts/parse_rank.js](scripts/parse_rank.js) | 解析等级文件 → 识别领域 → 期刊等级 JSON（含中文/英文分类） |
 | [scripts/match_journals.js](scripts/match_journals.js) | 匹配参考文献与等级数据（支持领域和语言筛选） |
 | [scripts/generate_xlsx.js](scripts/generate_xlsx.js) | 生成格式化 Excel |

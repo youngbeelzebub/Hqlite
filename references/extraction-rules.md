@@ -27,6 +27,7 @@ From the **first page** of the text, extract:
 References are typically separated by:
 - Numbered entries: `[1]`, `(1)`, `1.`, `1)` — use the numbering as delimiters
 - Unnumbered entries: separated by newlines with a hanging indent pattern
+- Repeated-author entries: lines beginning with an em dash or long dash, such as `—,`, `——,`, or `---,`, are separate references and inherit the author(s) from the immediately preceding reference
 - Each entry is one complete reference — do not split across lines
 
 ### 4. Extract Four Fields Per Reference
@@ -56,6 +57,7 @@ References are typically separated by:
   - `Smith, J., & Jones, R.` (APA)
   - `Smith J, Jones R.` (Vancouver)
   - `Smith, John, and Robert Jones.` (Chicago)
+- If an entry begins with a repeated-author dash (`—`, `——`, `---`) followed by additional authors, replace the dash with the immediately preceding reference's author prefix. Example: after `Kahneman, Daniel and Amos Tversky`, the next entry `—, Jack L. Knetsch, and Richard Thaler` should be interpreted as `Kahneman, Daniel, Jack L. Knetsch, and Richard Thaler`.
 - For multiple authors (>3), list the first author followed by "et al."
 - Preserve the original name format as much as possible
 
@@ -102,6 +104,7 @@ Smith, John A., and Robert B. Jones. "The Impact of AI on Labor Markets." Quarte
 | Reference with no clear title | Use the first substantive phrase after the author/year |
 | Reference with no journal (e.g., book chapter) | Use the publisher name or "Book: [Title]" |
 | Reference with no author | Mark author as "N/A" |
+| Entry begins with `—,` / `——,` / `---,` | Treat it as a new reference and inherit the previous reference's repeated author prefix |
 | Non-English reference | Extract as-is, do not translate |
 | Duplicate reference | Keep the first occurrence, skip duplicates |
 | Incomplete reference | Still extract available fields, mark missing ones as "N/A" |
