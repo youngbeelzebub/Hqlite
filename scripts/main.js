@@ -1,5 +1,5 @@
 /**
- * main.js - HQ Literature Extract 主入口脚本
+ * main.js - HqLean 主入口脚本
  *
  * 用法:
  *   node main.js <文件夹路径> prepare
@@ -10,7 +10,13 @@
  *     → 列出等级文件中识别到的所有专业领域
  *     → 输出: JSON 格式的领域列表和每个领域的期刊统计
  *
- *   node main.js <文件夹路径> export <refs_json> <tiers> [domains] [language]
+ *   node main.js <文件夹路径> infer-tiers
+ *     → 从 rank_data.json 自动推断等级从高到低排序，默认取最高和次高
+ *
+ *   node main.js <文件夹路径> lean-export <refs_json>
+ *     → 使用自动推断的最高和次高等级、全部领域、全部语言生成 Excel
+ *
+ *   node main.js <文件夹路径> export <refs_json> <tiers> [domains] [language] [--with-unmatched]
  *     → 匹配参考文献并生成 Excel
  *     → refs_json: 模型解析后的合并 JSON 文件路径
  *     → tiers: 要筛选的等级，逗号分隔，如 "A+,A"
@@ -19,9 +25,9 @@
  *
  * 完整工作流:
  *   1. node main.js "D:\论文" prepare        ← 脚本自动完成
- *   2. 模型读取领域列表，让用户选择领域和语言   ← 模型+用户交互
- *   3. 模型读取 paper_*.txt，手动解析参考文献   ← 模型完成
- *   4. node main.js "D:\论文" export refs.json "A+,A" "经济学,心理学" "all"  ← 脚本自动完成
+ *   2. 脚本自动推断最高和次高等级             ← 无需询问用户
+ *   3. 模型优先读取 model_input/paper_*.json  ← 低 token 解析参考文献
+ *   4. node main.js "D:\论文" lean-export refs.json
  */
 
 const fs = require('fs');
@@ -45,8 +51,6 @@ function ensureDependencies() {
     }
   }
 }
-
-ensureDependencies();
 
 // ===================== 工具函数 =====================
 
@@ -141,11 +145,174 @@ function buildRankParseReport(rankData, rankFileName) {
   return lines.join('\n');
 }
 
+function resolveInputPath(folderPath, inputPath) {
+  if (path.isAbsolute(inputPath)) return inputPath;
+  return path.join(folderPath, inputPath);
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf-8').replace(/^\uFEFF/, ''));
+}
+
+function tierScore(tier) {
+  const raw = String(tier || '').trim();
+  if (!raw) return null;
+  const normalized = raw
+    .replace(/\s+/g, '')
+    .replace(/[级類类刊]$/g, '')
+    .toUpperCase();
+
+  if (/^S\+*$/.test(normalized)) return 120 + (normalized.match(/\+/g) || []).length;
+
+  const letter = normalized.match(/^([A-E])(\+*)$/);
+  if (letter) {
+    const base = { A: 100, B: 80, C: 60, D: 40, E: 20 }[letter[1]];
+    return base + (letter[2] || '').length * 5;
+  }
+
+  const orderedPrefix = normalized.match(/^(T|Q)(\d+)$/);
+  if (orderedPrefix) return 100 - Number(orderedPrefix[2]);
+
+  const numeric = normalized.match(/^(\d+)(档|等|级)?$/);
+  if (numeric) return 100 - Number(numeric[1]);
+
+  const chineseNumber = raw.match(/^([一二三四五六七八九十])(类|档|等|级)$/);
+  if (chineseNumber) {
+    const map = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+    return 100 - map[chineseNumber[1]];
+  }
+
+  const semanticScores = {
+    顶级: 120,
+    权威: 110,
+    优秀: 105,
+    优: 105,
+    重要: 100,
+    重点: 100,
+    核心: 90,
+    良: 80,
+    中: 60,
+    一般: 50,
+    普通: 40,
+    扩展: 30,
+    补充: 20,
+    差: 10,
+    劣: 10,
+  };
+
+  return Object.prototype.hasOwnProperty.call(semanticScores, raw) ? semanticScores[raw] : null;
+}
+
+function inferTierOrder(rankData) {
+  const tiers = rankData.all_tiers || [];
+  const scored = tiers.map((tier, index) => ({
+    tier,
+    index,
+    score: tierScore(tier),
+  }));
+  const known = scored.filter(item => item.score !== null);
+
+  if (known.length >= 2 && known.length === tiers.length) {
+    const sorted = [...scored].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.index - b.index;
+    });
+    return {
+      ordered_tiers: sorted.map(item => item.tier),
+      selected_tiers: sorted.slice(0, 2).map(item => item.tier),
+      confidence: 'high',
+      reason: 'All tier labels matched known ordered patterns.',
+    };
+  }
+
+  if (known.length >= 2) {
+    const sortedKnown = [...known].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.index - b.index;
+    });
+    return {
+      ordered_tiers: sortedKnown.map(item => item.tier),
+      selected_tiers: sortedKnown.slice(0, 2).map(item => item.tier),
+      confidence: 'medium',
+      reason: 'At least two tier labels matched known ordered patterns; unrecognized labels were ignored.',
+      ignored_tiers: scored.filter(item => item.score === null).map(item => item.tier),
+    };
+  }
+
+  return {
+    ordered_tiers: tiers,
+    selected_tiers: [],
+    confidence: 'low',
+    reason: 'Could not infer at least two ordered tiers from known patterns.',
+  };
+}
+
+function inferTiers(folderPath) {
+  const rankDataPath = path.join(folderPath, '.hq_temp', 'rank_data.json');
+  if (!fs.existsSync(rankDataPath)) {
+    console.error('❌ 错误: 等级数据文件不存在！请先运行 prepare 命令。');
+    process.exit(1);
+  }
+
+  const rankData = readJsonFile(rankDataPath);
+  const inference = inferTierOrder(rankData);
+  const outputPath = path.join(folderPath, '.hq_temp', 'tier_inference.json');
+  fs.writeFileSync(outputPath, JSON.stringify(inference, null, 2), 'utf-8');
+
+  console.log('========================================');
+  console.log('  HqLean - 自动等级推断');
+  console.log('========================================\n');
+  console.log(`置信度: ${inference.confidence}`);
+  console.log(`原因: ${inference.reason}`);
+  console.log(`等级顺序: ${(inference.ordered_tiers || []).join(', ') || '无法判断'}`);
+  console.log(`默认筛选: ${(inference.selected_tiers || []).join(', ') || '无'}`);
+  if (inference.ignored_tiers && inference.ignored_tiers.length > 0) {
+    console.log(`忽略的未知等级: ${inference.ignored_tiers.join(', ')}`);
+  }
+  console.log(`\n推断结果已保存到: ${outputPath}`);
+
+  if (!inference.selected_tiers || inference.selected_tiers.length < 2) {
+    console.error('\n❌ 无法可靠推断最高和次高等级。请改用 export 命令手动指定等级。');
+    process.exit(1);
+  }
+
+  return inference;
+}
+
+function createModelInput(folderPath, tempDir, paperIndex, paperFileName, txtPath, blocksPath) {
+  const text = fs.readFileSync(txtPath, 'utf-8');
+  const blocksData = readJsonFile(blocksPath);
+  const modelInputDir = path.join(tempDir, 'model_input');
+  ensureDir(modelInputDir);
+
+  const modelInput = {
+    paper_index: paperIndex,
+    source_pdf: paperFileName,
+    paper_text_path: txtPath,
+    reference_blocks_path: blocksPath,
+    first_page_preview: text.slice(0, 4500),
+    block_summary: blocksData.summary || {},
+    reference_blocks: blocksData.blocks || [],
+    fallback: {
+      read_full_text_when: [
+        'reference_blocks is empty',
+        'references_header_found is false and blocks look incomplete',
+        'paper title or first author cannot be inferred from first_page_preview',
+        'many extracted references have empty journal fields',
+      ],
+    },
+  };
+
+  const outputPath = path.join(modelInputDir, `paper_${paperIndex}.json`);
+  fs.writeFileSync(outputPath, JSON.stringify(modelInput, null, 2), 'utf-8');
+  return outputPath;
+}
+
 // ===================== prepare 命令 =====================
 
 function prepare(folderPath) {
   console.log('========================================');
-  console.log('  HQ Literature Extract - 准备阶段');
+  console.log('  HqLean - 准备阶段');
   console.log('========================================\n');
 
   // 1. 检查文件夹
@@ -183,7 +350,7 @@ function prepare(folderPath) {
   runNodeScript('parse_rank.js', [rankPath, rankOutput]);
   console.log('');
 
-  const rankData = JSON.parse(fs.readFileSync(rankOutput, 'utf-8'));
+  const rankData = readJsonFile(rankOutput);
   const rankReportPath = path.join(tempDir, 'rank_parse_report.md');
   fs.writeFileSync(rankReportPath, buildRankParseReport(rankData, rankFile), 'utf-8');
   console.log(`✓ 等级解析诊断报告: ${rankReportPath}`);
@@ -208,6 +375,7 @@ function prepare(folderPath) {
   // 6. 转换论文 PDF 为文本
   console.log('\n--- 提取论文文本 ---');
   const paperTextPaths = [];
+  const modelInputPaths = [];
   for (let i = 0; i < paperFiles.length; i++) {
     const pdfPath = path.join(folderPath, paperFiles[i]);
     const txtPath = path.join(tempDir, `paper_${i + 1}.txt`);
@@ -215,14 +383,19 @@ function prepare(folderPath) {
     runNodeScript('read_pdf.js', [pdfPath, txtPath]);
     const blocksPath = path.join(tempDir, `paper_${i + 1}_reference_blocks.json`);
     runNodeScript('split_references.js', [txtPath, blocksPath]);
+    const modelInputPath = createModelInput(folderPath, tempDir, i + 1, paperFiles[i], txtPath, blocksPath);
+    console.log(`✓ 模型精简输入: ${modelInputPath}`);
     paperTextPaths.push(txtPath);
+    modelInputPaths.push(modelInputPath);
   }
 
   // 7. 输出摘要
   console.log('\n========================================');
   console.log('  准备完成！');
   console.log('========================================\n');
-  console.log('下一步: 请让模型读取以下文件并解析参考文献:');
+  console.log('下一步: 请让模型优先读取以下精简输入并解析参考文献:');
+  modelInputPaths.forEach((p, i) => console.log(`  论文 ${i + 1}: ${p}`));
+  console.log('\n仅在精简输入不足时回看完整文本:');
   paperTextPaths.forEach((p, i) => console.log(`  论文 ${i + 1}: ${p}`));
   console.log(`\n等级数据: ${rankOutput}`);
 
@@ -243,16 +416,18 @@ function prepare(folderPath) {
     console.log(`  ${tier}`);
   }
 
-  console.log('\n下一步: 请让用户选择要筛选的领域和语言类型:');
-  console.log('  - 领域选择: 从上述可用领域中选择（可多选）');
-  console.log('  - 语言选择: 中文期刊 / 英文期刊 / 全部');
-  console.log('  - 等级选择: 从上述可用等级中选择（可多选）');
+  const inference = inferTierOrder(rankData);
+  const tierInferencePath = path.join(tempDir, 'tier_inference.json');
+  fs.writeFileSync(tierInferencePath, JSON.stringify(inference, null, 2), 'utf-8');
+  console.log('\n自动等级推断:');
+  console.log(`  置信度: ${inference.confidence}`);
+  console.log(`  默认筛选: ${(inference.selected_tiers || []).join(', ') || '无法自动判断'}`);
+  console.log(`  推断结果: ${tierInferencePath}`);
 
   console.log('\n模型解析完成后，请运行:');
-  console.log(`  node main.js "${folderPath}" export <refs_json_path> "<tiers>" "<domains>" "<language>"`);
+  console.log(`  node main.js "${folderPath}" lean-export <refs_json_path>`);
   console.log('\n例:');
-  console.log(`  node main.js "${folderPath}" export temp/all_refs.json "A+,A" "经济学,心理学" "all"`);
-  console.log(`  node main.js "${folderPath}" export temp/all_refs.json "A+" "经济学" "chinese"`);
+  console.log(`  node main.js "${folderPath}" lean-export ".hq_temp/all_refs.json"`);
 }
 
 // ===================== list-domains 命令 =====================
@@ -267,7 +442,7 @@ function listDomains(folderPath) {
     process.exit(1);
   }
 
-  const rankData = JSON.parse(fs.readFileSync(rankDataPath, 'utf-8'));
+  const rankData = readJsonFile(rankDataPath);
 
   console.log('========================================');
   console.log('  可用专业领域');
@@ -309,9 +484,9 @@ function listDomains(folderPath) {
 
 // ===================== export 命令 =====================
 
-function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
+function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language, options = {}) {
   console.log('========================================');
-  console.log('  HQ Literature Extract - 导出阶段');
+  console.log(options.lean ? '  HqLean - 导出阶段' : '  HqLean - 手动导出阶段');
   console.log('========================================\n');
 
   const tempDir = path.join(folderPath, '.hq_temp');
@@ -355,7 +530,9 @@ function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
   console.log('\n--- 匹配参考文献 ---');
   const filteredPath = path.join(tempDir, 'filtered_refs.json');
   const unmatchedPath = path.join(tempDir, 'unmatched_refs.json');
-  runNodeScript('match_journals.js', [refsJsonPath, rankDataPath, tiersStr, filteredPath, domainsStr || '', lang, unmatchedPath]);
+  const matchArgs = [refsJsonPath, rankDataPath, tiersStr, filteredPath, domainsStr || '', lang];
+  if (options.withUnmatched) matchArgs.push(unmatchedPath);
+  runNodeScript('match_journals.js', matchArgs);
   console.log('');
 
   // 3. 生成 Excel
@@ -363,8 +540,11 @@ function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
   const outputPath = path.join(folderPath, 'hq_references.xlsx');
   runNodeScript('generate_xlsx.js', ['--input', filteredPath, '--output', outputPath]);
 
-  const unmatchedOutputPath = path.join(folderPath, 'unmatched_refs.xlsx');
-  runNodeScript('generate_xlsx.js', ['--input', unmatchedPath, '--output', unmatchedOutputPath]);
+  let unmatchedOutputPath = null;
+  if (options.withUnmatched) {
+    unmatchedOutputPath = path.join(folderPath, 'unmatched_refs.xlsx');
+    runNodeScript('generate_xlsx.js', ['--input', unmatchedPath, '--output', unmatchedOutputPath]);
+  }
 
   // 4. 清理临时文件
   console.log('\n--- 清理临时文件 ---');
@@ -382,14 +562,28 @@ function exportExcel(folderPath, refsJsonPath, tiersStr, domainsStr, language) {
   console.log('  完成！');
   console.log('========================================\n');
   console.log(`Excel 文件已保存到: ${outputPath}`);
-  console.log(`未匹配参考文献已保存到: ${unmatchedOutputPath}`);
+  if (unmatchedOutputPath) {
+    console.log(`未匹配参考文献已保存到: ${unmatchedOutputPath}`);
+  } else {
+    console.log('轻量模式未生成未匹配参考文献表。需要诊断时请使用 --with-unmatched。');
+  }
+}
+
+function leanExport(folderPath, refsJsonPath) {
+  const inference = inferTiers(folderPath);
+  if (inference.confidence === 'low') {
+    console.error('❌ 等级推断置信度过低。请改用 export 命令手动指定等级。');
+    process.exit(1);
+  }
+  const tiersStr = inference.selected_tiers.join(',');
+  exportExcel(folderPath, refsJsonPath, tiersStr, '', 'all', { lean: true, withUnmatched: false });
 }
 
 // ===================== CLI =====================
 
 const args = process.argv.slice(2);
 if (args.length < 2) {
-  console.log('HQ Literature Extract - 从论文中提取高质量参考文献');
+  console.log('HqLean - 低 token 高质量参考文献筛选');
   console.log('');
   console.log('用法:');
   console.log('  node main.js <文件夹路径> prepare');
@@ -398,8 +592,14 @@ if (args.length < 2) {
   console.log('  node main.js <文件夹路径> list-domains');
   console.log('    列出等级文件中识别到的所有专业领域');
   console.log('');
-  console.log('  node main.js <文件夹路径> export <refs_json> <tiers> [domains] [language]');
-  console.log('    匹配参考文献并生成 Excel');
+  console.log('  node main.js <文件夹路径> infer-tiers');
+  console.log('    自动推断等级顺序并默认选择最高、次高等级');
+  console.log('');
+  console.log('  node main.js <文件夹路径> lean-export <refs_json>');
+  console.log('    使用最高和次高等级、全部领域、全部语言生成 Excel');
+  console.log('');
+  console.log('  node main.js <文件夹路径> export <refs_json> <tiers> [domains] [language] [--with-unmatched]');
+  console.log('    手动指定筛选条件并生成 Excel');
   console.log('    refs_json: 模型解析后的参考文献 JSON 路径');
   console.log('    tiers: 要筛选的等级，逗号分隔，如 "A+,A"');
   console.log('    domains: 要筛选的领域，逗号分隔，如 "经济学,心理学"（可选，默认全部）');
@@ -407,6 +607,8 @@ if (args.length < 2) {
   console.log('');
   console.log('示例:');
   console.log('  node main.js "D:\\论文" prepare');
+  console.log('  node main.js "D:\\论文" infer-tiers');
+  console.log('  node main.js "D:\\论文" lean-export ".hq_temp/all_refs.json"');
   console.log('  node main.js "D:\\论文" list-domains');
   console.log('  node main.js "D:\\论文" export ".hq_temp/all_refs.json" "A+,A"');
   console.log('  node main.js "D:\\论文" export ".hq_temp/all_refs.json" "A+,A" "经济学,心理学" "all"');
@@ -417,22 +619,37 @@ if (args.length < 2) {
 const folderPath = path.resolve(args[0]);
 const command = args[1].toLowerCase();
 
+if (['prepare', 'lean-export', 'export'].includes(command)) {
+  ensureDependencies();
+}
+
 if (command === 'prepare') {
   prepare(folderPath);
 } else if (command === 'list-domains') {
   listDomains(folderPath);
+} else if (command === 'infer-tiers') {
+  inferTiers(folderPath);
+} else if (command === 'lean-export') {
+  if (args.length < 3) {
+    console.error('❌ 错误: lean-export 命令需要提供参考文献 JSON 路径。');
+    console.error('   用法: node main.js <文件夹路径> lean-export <refs_json>');
+    process.exit(1);
+  }
+  leanExport(folderPath, resolveInputPath(folderPath, args[2]));
 } else if (command === 'export') {
-  if (args.length < 4) {
+  const positionalArgs = args.filter(arg => arg !== '--with-unmatched');
+  if (positionalArgs.length < 4) {
     console.error('❌ 错误: export 命令需要提供参考文献 JSON 路径和筛选等级。');
     console.error('   用法: node main.js <文件夹路径> export <refs_json> <tiers> [domains] [language]');
     console.error('   例: node main.js "D:\\论文" export ".hq_temp/all_refs.json" "A+,A" "经济学" "all"');
     process.exit(1);
   }
-  const domainsStr = args[4] || '';
-  const language = args[5] || 'all';
-  exportExcel(folderPath, path.resolve(args[2]), args[3], domainsStr, language);
+  const domainsStr = positionalArgs[4] || '';
+  const language = positionalArgs[5] || 'all';
+  const withUnmatched = args.includes('--with-unmatched');
+  exportExcel(folderPath, resolveInputPath(folderPath, positionalArgs[2]), positionalArgs[3], domainsStr, language, { withUnmatched });
 } else {
   console.error(`❌ 未知命令: ${command}`);
-  console.error('   可用命令: prepare, list-domains, export');
+  console.error('   可用命令: prepare, list-domains, infer-tiers, lean-export, export');
   process.exit(1);
 }
