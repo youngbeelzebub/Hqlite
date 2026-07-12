@@ -18,7 +18,8 @@
 1. 前置条件配置：**Node.js** v16+
 
 2. 让 Agent 自行安装
-3. 
+3. <strong style="color:red">红色加粗文字</strong>
+4. 
    注意：
    
    (1)"[请安装分钟lean]"是可选选项，如果只安装Hqlite基础版请删除。
