@@ -20,7 +20,17 @@
 2. 让 Agent 自行安装
 
    ```
-   帮我安装这个 skill： https://github.com/youngbeelzebub/hq-literature-extract.git
+   请帮我安装这个skill：
+   仓库地址：https://github.com/youngbeelzebub/Hqlite.git
+   [请安装分支lean]
+   安装到这个文件夹：D:\你想安装的位置\skills\Hqlite
+
+   要求：
+   1. 如果目标文件夹不存在，请创建。
+   2. 如果目标文件夹已经存在，请先告诉我，不要直接覆盖。
+   3. 请使用 git clone 安装 lean 分支。
+   4. 安装后检查 D:\你想安装的位置\skills\Hqlite\SKILL.md 是否存在。
+   5. 如果需要联网、写入文件夹或提升权限，请向我申请批准。
    ```
 
 ### 使用
